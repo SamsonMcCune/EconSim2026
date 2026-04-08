@@ -1,0 +1,19 @@
+To expand from exchange2.py, which takes N agents and has them trade, I want to introduce production. Right now, there is random allocation of goods. I could make a production function of sorts, or investment into capital. From here I want firms to form naturally. Making this connection is bothering me. I also want to add supply and demand curves. I could also expand to lorenz curve work, see how the gini coefficient changes when there is inflation and higher interest rates. This could also show off something like a federal reserve to create and control money through a bond market.
+
+Is there a way I could grant people something to spend to get apples or barracudas? Like each round you eat some apples, some depreciate, and the others can be planted to make apple trees. You can choose how many of each for the apple to do. Each agent has an endowment of land, now.
+
+Is there a way to have the discount factor emerge? Perhaps it is something learned, a result of some sort of randomness. Risk preferences tend to have something to do with time preferences, do they not? In my mind, the discount factor is determind as a result of learning, not an established thing.
+
+Another idea could be that the discount factor is the result of a genetic algorithm, with reproduction happening, and this then determining the resulting distributions of the children. At this point, I am at a crossroads. Do I continue by hardcoding time preferences and intertemporal utility or do I make these statistics emergent from evolution?
+
+First name is for individual labeling.
+Last name is for familial/regional labeling
+Gender is for reproduction.
+Intelligence is risk preference.
+Wisdom is time preference.
+Strength is for inventory size
+Dexterity is for transportation costs
+Charisma is for bargaining power
+Comeliness is for relationship development
+Constitution is for one's willingness to accept negative things, sort of like fortitude. Could be removed.
+
