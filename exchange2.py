@@ -229,14 +229,6 @@ def mrs_dispersion(agents):
     mrs_values = [agent.mrs()[0] for agent in agents]
     return np.std(mrs_values)
 
-def demand(buyer_price, price_history):
-    demand_curve = t
-    return demand_curve
-
-def supply(price_history):
-    supply_curve = t
-    return supply_curve
-
 interest_rate = .24
 delta = 1
 periods = 100
