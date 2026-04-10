@@ -15,6 +15,7 @@ PARAM_KEYS = [
     "fertility_rate",
     "avg_children"
 ]
+
 def first_generation(num_agents):
     agents = [Agent(i, 1) for i in range(num_agents)]
     positions = np.array([agent.position for agent in agents])
