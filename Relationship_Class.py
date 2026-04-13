@@ -11,6 +11,7 @@ class Relationship:
         self.score = self.rel_score(a, b)
         self.friends = self.score >= 0.7
         self.transaction_cost = self.distance/100
+        self.food_surplus = 0
 
     def rel_score(self, a, b, alpha=2):
         similarity = np.dot(a.genome_vector_normalized, b.genome_vector_normalized)

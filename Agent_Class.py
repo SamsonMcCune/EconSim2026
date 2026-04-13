@@ -15,7 +15,7 @@ def softmax(w):
     exp = np.exp(w - np.max(w))
     return exp / np.sum(exp)
 
-trait_keys = ["intelligence", "wisdom", "strength", "dexterity", "charisma", "comeliness", "constitution"]
+trait_keys = ["intelligence", "wisdom", "strength", "dexterity", "charisma", "comeliness", "constitution", "metabolic_rate"]
 
 class Agent:
 
@@ -31,7 +31,8 @@ class Agent:
             "dexterity": 200*np.random.rand(),
             "charisma": 200*np.random.rand(),
             "comeliness": 200*np.random.rand(),
-            "constitution": 200*np.random.rand()
+            "constitution": 200*np.random.rand(),
+            "metabolic_rate":200*np.random.rand()
         }
         self.radius = 0.02 + 0.08*(self.genome["dexterity"]/200)
         self.relationships = {}
