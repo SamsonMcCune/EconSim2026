@@ -38,12 +38,30 @@ class Agent:
         self.relationships = {}
         self.genome_vector = dictionary_to_vector(self.genome, trait_keys)
         self.genome_vector_normalized = (self.genome_vector - 1)/np.linalg.norm(self.genome_vector, keepdims=True)
+        self.energy = np.random.randint(3)
         self.income = self.genome["intelligence"]*np.random.randint(1,5)
         self.w = np.array([1.0, 1.0, 1.0])
         self.true_CD_exponents = softmax(np.random.rand(3))
         self.expected_CD_exponents = softmax(self.w)
         self.inventory = np.array(self.random_allocation(), dtype=float)
         self.saving_rate = np.random.rand()
+        self.fitness = self.compute_fitness()
+        self.cell = self.get_cell(50)
+        self.married = False
+        self.partner_id = None
+
+
+    def get_cell(self, grid_size):
+        x = int(self.position[0] * grid_size)
+        y = int(self.position[1] * grid_size)
+        return x, y
+
+    def compute_fitness(self):
+        survival = self.genome["constitution"] * 0.4 + self.genome["strength"] * 0.3
+        attractiveness = self.genome["charisma"] * 0.5 + self.genome["comeliness"] * 0.5
+        efficiency = self.genome["strength"] / (self.genome["metabolic_rate"] + 1e-8)
+        fitness = (0.4 * survival + 0.4 * attractiveness + 0.2 * efficiency)
+        return fitness
 
     def random_uniform_position(self):
         position = np.random.rand(2)

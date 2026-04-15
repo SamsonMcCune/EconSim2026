@@ -43,8 +43,16 @@ def build_marriages(friendships):
         a, b = rel.a, rel.b
         if a.genome["gender"] == b.genome["gender"]:
             continue
-        if a.id not in matched and b.id not in matched and a.generation == b.generation:
+        if (
+            not a.married and
+            not b.married and
+            a.generation == b.generation
+        ):
             rel.married = True
+            a.married = True
+            b.married = True
+            a.partner_id = b.id
+            b.partner_id = a.id
             marriages.append(rel)
             matched.add(a.id)
             matched.add(b.id)
@@ -64,17 +72,19 @@ def record_population_state(agents, history, trait_keys, food):
         values = [a.genome[trait] for a in agents]
         history["traits"][trait].append(np.mean(values))
 
-def survives(agent, round, necessary_food, consumed_food):
-    base = agent.genome["constitution"] / 100
+
+def survives(agent, round, consumed_food):
+    agent.energy += consumed_food
+    metabolic_cost = (agent.genome["metabolic_rate"] / 100) ** 1.5
+    agent.energy -= metabolic_cost
     age = round - agent.generation
-    age_effect = np.exp(-0.03 * age)
-    if necessary_food <= 0:
-        food_effect = 1
-    else:
-        food_effect = np.clip(consumed_food / necessary_food, 0, 1)
-    survival_prob = (0.5 * base + 0.3 * food_effect + 0.2 * age_effect)
-    survival_prob = np.clip(survival_prob, 0, 1)
-    return np.random.rand() < survival_prob
+    age_cost = 0.01 * age  # small linear decay (tune very lightly if needed)
+    agent.energy -= age_cost
+    constitution = agent.genome["constitution"] / 100
+    agent.energy += 0.2 * constitution * metabolic_cost  # partial refund-
+    if agent.energy <= 0:
+        return False
+    return True
 
 def reproduce(marriages, trait_keys, next_id_start):
     children = []
@@ -82,41 +92,113 @@ def reproduce(marriages, trait_keys, next_id_start):
     for marriage in marriages:
         parent_a, parent_b = marriage.a, marriage.b
         surplus = marriage.food_surplus
-        eff_a = parent_a.genome["strength"] / (parent_a.genome["metabolic_rate"] + 1e-8)
-        eff_b = parent_b.genome["strength"] / (parent_b.genome["metabolic_rate"] + 1e-8)
-        efficiency = (eff_a + eff_b) / 2
-        fertility_modifier = 0.2 + 0.4 * np.tanh(surplus) + 0.4 * np.tanh(efficiency / 10)
-        if np.random.rand() > fertility_modifier:
-            continue
-        else:
-            child_generation = parent_a.generation + 1
-            expected_children = 2.1
-            num_children = np.random.poisson(expected_children)
-            for n in range(num_children):
-                child = Agent(next_id, child_generation)
-                next_id += 1
-                for trait in trait_keys:
-                    p = np.random.rand()
-                    value = (
-                        parent_a.genome[trait] * p +
-                        parent_b.genome[trait] * (1 - p)
+        reproduction_cost_a = 0.5 * (parent_a.genome["metabolic_rate"] / 100)
+        reproduction_cost_b = 0.5 * (parent_b.genome["metabolic_rate"] / 100)
+        if parent_a.energy > reproduction_cost_a and parent_b.energy > reproduction_cost_b:
+            parent_a.energy -= reproduction_cost_a / 2
+            parent_b.energy -= reproduction_cost_b / 2
+            avg_fitness = (parent_a.fitness + parent_b.fitness) / 2
+            fertility_modifier = (0.2 * np.tanh(surplus) + 0.7 * np.tanh(avg_fitness / 100))
+            if np.random.rand() > fertility_modifier:
+                continue
+            else:
+                child_generation = parent_a.generation + 1
+                surplus_a = max(0, parent_a.energy - 1.0)
+                surplus_b = max(0, parent_b.energy - 1.0)
+                available_energy = surplus_a + surplus_b
+                num_children = int(available_energy / ((reproduction_cost_a + reproduction_cost_b)/2))
+                energy_per_child = available_energy / (num_children + 1e-8)
+                for n in range(num_children):
+                    child = Agent(next_id, child_generation)
+                    next_id += 1
+                    for trait in trait_keys:
+                        p = np.random.rand()
+                        value = (
+                            parent_a.genome[trait] * p +
+                            parent_b.genome[trait] * (1 - p)
+                        )
+                        mutation_strength = 0.1
+                        value += np.random.normal(0, mutation_strength * value)
+                        child.genome[trait] = max(0, value)
+                    direction = parent_b.position - parent_a.position
+                    orthogonal = np.array([-direction[1], direction[0]])  # perpendicular
+                    orthogonal /= np.linalg.norm(orthogonal) + 1e-8
+                    t = np.random.rand()
+                    base_pos = parent_a.position + t * direction
+                    offset = np.random.normal(0, 0.02)
+                    child.position = np.clip(base_pos + offset * orthogonal, 0, 1)
+                    child.radius = child.genome["dexterity"] / 200
+                    child.genome_vector = dictionary_to_vector(child.genome, trait_keys)
+                    child.genome_vector_normalized = (
+                        child.genome_vector / np.linalg.norm(child.genome_vector)
                     )
-                    mutation_strength = 0.1
-                    value += np.random.normal(0, mutation_strength * value)
-                    child.genome[trait] = max(0, value)
-                direction = parent_b.position - parent_a.position
-                orthogonal = np.array([-direction[1], direction[0]])  # perpendicular
-                orthogonal /= np.linalg.norm(orthogonal) + 1e-8
-                t = np.random.rand()
-                base_pos = parent_a.position + t * direction
-                offset = np.random.normal(0, 0.02)
-                child.position = np.clip(base_pos + offset * orthogonal, 0, 1)
-                child.radius = child.genome["dexterity"] / 200
-                child.genome_vector = dictionary_to_vector(child.genome, trait_keys)
-                child.genome_vector_normalized = (
-                    child.genome_vector / np.linalg.norm(child.genome_vector)
+                    child.energy = 0.5 * energy_per_child
+                    child.married = False
+                    child.partner_id = None
+                    children.append(child)
+    return children, next_id
+
+def random_mating(agents, trait_keys, next_id, rate=0.01, marriage_penalty=0.3):
+    children = []
+    n = len(agents)
+    num_attempts = int(rate * n)
+    for _ in range(num_attempts):
+        parent_a, parent_b = np.random.choice(agents, 2, replace=False)
+        if parent_a.genome["gender"] == parent_b.genome["gender"]:
+            continue
+        prob_a = marriage_penalty if getattr(parent_a, "married", False) else 1.0
+        prob_b = marriage_penalty if getattr(parent_b, "married", False) else 1.0
+        if np.random.rand() > prob_a or np.random.rand() > prob_b:
+            continue
+        rel = Relationship(parent_a, parent_b)
+        if rel.distance > 0.1:
+            continue
+        fitness_a = parent_a.fitness
+        fitness_b = parent_b.fitness
+        fitness_prob = np.tanh((fitness_a + fitness_b) / 200)
+        if np.random.rand() > fitness_prob:
+            continue
+        reproduction_cost_a = 0.5 * (parent_a.genome["metabolic_rate"] / 100)
+        reproduction_cost_b = 0.5 * (parent_b.genome["metabolic_rate"] / 100)
+        if parent_a.energy <= reproduction_cost_a or parent_b.energy <= reproduction_cost_b:
+            continue
+        surplus_a = max(0, parent_a.energy - 1.0)
+        surplus_b = max(0, parent_b.energy - 1.0)
+        available_energy = surplus_a + surplus_b
+        avg_cost = (reproduction_cost_a + reproduction_cost_b) / 2
+        num_children = int(available_energy / (avg_cost + 1e-8))
+        if num_children <= 0:
+            continue
+        parent_a.energy -= reproduction_cost_a / 2
+        parent_b.energy -= reproduction_cost_b / 2
+        energy_per_child = available_energy / (num_children + 1e-8)
+        for _ in range(num_children):
+            child = Agent(next_id, max(parent_a.generation, parent_b.generation) + 1)
+            next_id += 1
+            for trait in trait_keys:
+                p = np.random.rand()
+                value = (
+                    parent_a.genome[trait] * p +
+                    parent_b.genome[trait] * (1 - p)
                 )
-                children.append(child)
+                value += np.random.normal(0, 0.1 * value)
+                child.genome[trait] = max(0, value)
+            direction = parent_b.position - parent_a.position
+            orthogonal = np.array([-direction[1], direction[0]])
+            orthogonal /= np.linalg.norm(orthogonal) + 1e-8
+            t = np.random.rand()
+            base_pos = parent_a.position + t * direction
+            offset = np.random.normal(0, 0.02)
+            child.position = np.clip(base_pos + offset * orthogonal, 0, 1)
+            child.radius = child.genome["dexterity"] / 200
+            child.genome_vector = dictionary_to_vector(child.genome, trait_keys)
+            child.genome_vector_normalized = (
+                child.genome_vector / np.linalg.norm(child.genome_vector)
+            )
+            child.energy = 0.5 * energy_per_child
+            child.married = False
+            child.partner_id = None
+            children.append(child)
     return children, next_id
 
 def food_production(food, growth_rate, food_capacity):
@@ -125,7 +207,8 @@ def food_production(food, growth_rate, food_capacity):
 
 def food_consumption(agents, food):
     strength_values = np.array([a.genome["strength"] for a in agents])
-    weights = np.maximum(strength_values, 0)
+    metabolic_values = np.array([a.genome["metabolic_rate"] for a in agents])
+    weights = (strength_values/metabolic_values) ** 1.5
     total_weight = np.sum(weights) + 1e-8
     shares = weights / total_weight * food
     consumed = {}
@@ -153,25 +236,34 @@ def population_evolution_logistic(num_agents, initial_food, food_growth, total_r
     next_id = num_agents
     history = initialize_tracker(trait_keys)
     food = initial_food
-    food_capacity = initial_food * 5
+    food_capacity = 5*len(agents)
+    marriages = []
     for round in range(total_rounds):
+        food_capacity = 0.2 * food_capacity + 0.8 * (6 * len(agents))
         relationships = build_relationships_kdtree(agents)
         food, food_balance, consumed, required = food_consumption(agents, food)
         assign_food_to_relationships(relationships, {aid: consumed[aid] - required[aid] for aid in consumed})
         print(f"Round {round + 1}, population: {len(agents)}")
         record_population_state(agents, history, trait_keys, food)
         friendships = build_friendships(relationships)
-        marriages = build_marriages(friendships)
-        children, next_id = reproduce(marriages, trait_keys, next_id)
+        new_marriages = build_marriages(friendships)
+        marriages += new_marriages
+        alive_ids = {a.id for a in agents}
+        marriages = [
+            m for m in marriages
+            if m.a.id in alive_ids and m.b.id in alive_ids
+        ]
+        children1, next_id = reproduce(marriages, trait_keys, next_id)
+        children2, next_id = random_mating(agents, trait_keys, next_id, rate=0.01)
+        children = children1 + children2
         agents.extend(children)
         for c in children:
             consumed[c.id] = 0
-            required[c.id] = min(c.genome["metabolic_rate"] / 100, 1)
         agents = [
             a for a in agents
-            if survives(a, round, required[a.id], consumed[a.id])
+            if survives(a, round, consumed[a.id])
         ]
-        food = food_production(food, food_growth, food_capacity)
+        food = food + food_production(food, food_growth, food_capacity)
     return agents, history, food
 
 def plot_population(history):
@@ -256,7 +348,7 @@ def plot_population_and_food(history):
 
 start = time.time()
 trait_keys = ["intelligence", "wisdom", "strength", "dexterity", "charisma", "comeliness", "constitution", "metabolic_rate"]
-num_agents = 100
+num_agents = 10000
 initial_food = 10*num_agents
 food_growth = num_agents/initial_food
 agents, history, food = population_evolution_logistic(num_agents, initial_food, food_growth, 35, trait_keys)

@@ -15,6 +15,7 @@ class Relationship:
 
     def rel_score(self, a, b, alpha=2):
         similarity = np.dot(a.genome_vector_normalized, b.genome_vector_normalized)
+        fitness_score = .5*(a.fitness + b.fitness)
         noise = np.random.normal(0, 0.15)
         distance_penalty = np.exp(-self.distance / (alpha * (a.radius + b.radius)))
-        return np.clip(similarity * distance_penalty + noise, -1, 1)
+        return np.clip(distance_penalty*(.5*similarity + .5*fitness_score)  + noise, -1, 1)
