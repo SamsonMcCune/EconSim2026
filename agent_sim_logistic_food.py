@@ -2,10 +2,24 @@ from scipy.spatial import cKDTree
 from Agent_Class import Agent
 from Agent_Class import dictionary_to_vector
 from Relationship_Class import Relationship
+from scipy.ndimage import gaussian_filter
 import matplotlib.pyplot as plt
 import numpy as np
 import time
 np.random.seed(67)
+
+base_prices = {
+    "apple": 2,
+    "barracuda": 5
+}
+
+price_history = {
+    "apple": [],
+    "barracuda": []
+}
+
+def normalize(grid):
+    return 0.5 + (grid - grid.min()) / (grid.max() - grid.min())
 
 def first_generation(num_agents):
     agents = [Agent(i, 1) for i in range(num_agents)]
@@ -37,7 +51,6 @@ def build_friendships(relationships):
 
 def build_marriages(friendships):
     friendships.sort(key=lambda r: r.score, reverse=True)
-    matched = set()
     marriages = []
     for rel in friendships:
         a, b = rel.a, rel.b
@@ -54,8 +67,6 @@ def build_marriages(friendships):
             a.partner_id = b.id
             b.partner_id = a.id
             marriages.append(rel)
-            matched.add(a.id)
-            matched.add(b.id)
     return marriages
 
 def initialize_tracker(trait_keys):
@@ -78,7 +89,7 @@ def survives(agent, round, consumed_food):
     metabolic_cost = (agent.genome["metabolic_rate"] / 100) ** 1.5
     agent.energy -= metabolic_cost
     age = round - agent.generation
-    age_cost = 0.01 * age  # small linear decay (tune very lightly if needed)
+    age_cost = 0.01 * age
     agent.energy -= age_cost
     constitution = agent.genome["constitution"] / 100
     agent.energy += 0.2 * constitution * metabolic_cost  # partial refund-
@@ -133,6 +144,7 @@ def reproduce(marriages, trait_keys, next_id_start):
                         child.genome_vector / np.linalg.norm(child.genome_vector)
                     )
                     child.energy = 0.5 * energy_per_child
+                    child.inventory = np.array([0.0, 0.0, 1.0])
                     child.married = False
                     child.partner_id = None
                     children.append(child)
@@ -195,15 +207,44 @@ def random_mating(agents, trait_keys, next_id, rate=0.01, marriage_penalty=0.3):
             child.genome_vector_normalized = (
                 child.genome_vector / np.linalg.norm(child.genome_vector)
             )
+            child.inventory = np.array([0.0, 0.0, 1.0])
             child.energy = 0.5 * energy_per_child
             child.married = False
             child.partner_id = None
             children.append(child)
     return children, next_id
 
+def select_trade_pairs(relationships):
+    rels = list(relationships.values())
+    np.random.shuffle(rels)
+    rels.sort(key=lambda r: getattr(r, "score", 0), reverse=True)
+    used = set()
+    trade_pairs = []
+    for rel in rels:
+        a_id = rel.a.id
+        b_id = rel.b.id
+        if a_id in used or b_id in used:
+            continue
+        trade_pairs.append(rel)
+        used.add(a_id)
+        used.add(b_id)
+    return trade_pairs
+
 def food_production(food, growth_rate, food_capacity):
     growth = growth_rate * food * (1 - food / food_capacity)
     return food + growth
+
+def produce(agent, resource_grid):
+    x = agent.x
+    y = agent.y
+    apple_yield = resource_grid["apple"][x, y]
+    fish_yield  = resource_grid["barracuda"][x, y]
+    strength = agent.genome["strength"] / 100
+    metabolism = agent.genome["metabolic_rate"] / 100
+    apples = strength * apple_yield / (metabolism + 1e-8)
+    fish   = strength * fish_yield / (metabolism + 1e-8)
+    agent.inventory[0] += apples
+    agent.inventory[1] += fish
 
 def food_consumption(agents, food):
     strength_values = np.array([a.genome["strength"] for a in agents])
@@ -223,6 +264,23 @@ def food_consumption(agents, food):
     food_remaining = food - sum(consumed.values())
     return food_remaining, food_balance, consumed, required
 
+def consume_from_inventory(agent):
+    apple_energy = 1.0
+    fish_energy = 1.2
+    need = (agent.genome["metabolic_rate"] / 100) ** 1.5
+    apples_available = max(0.0, agent.inventory[0])
+    fish_available = max(0.0, agent.inventory[1])
+    apples_eaten = min(apples_available, need / apple_energy)
+    energy_gained = apples_eaten * apple_energy
+    remaining_need = max(0.0, need - energy_gained)
+    fish_eaten = min(fish_available, remaining_need / fish_energy)
+    energy_gained += fish_eaten * fish_energy
+    agent.inventory[0] -= apples_eaten
+    agent.inventory[1] -= fish_eaten
+
+    surplus = max(0.0, agent.inventory[0] + agent.inventory[1])
+    return energy_gained, surplus
+
 def assign_food_to_relationships(relationships, food_balance):
     for rel in relationships.values():
         a_id = rel.a.id
@@ -241,6 +299,7 @@ def population_evolution_logistic(num_agents, initial_food, food_growth, total_r
     for round in range(total_rounds):
         food_capacity = 0.2 * food_capacity + 0.8 * (6 * len(agents))
         relationships = build_relationships_kdtree(agents)
+        market_pairs = select_trade_pairs(relationships)
         food, food_balance, consumed, required = food_consumption(agents, food)
         assign_food_to_relationships(relationships, {aid: consumed[aid] - required[aid] for aid in consumed})
         print(f"Round {round + 1}, population: {len(agents)}")
@@ -265,6 +324,122 @@ def population_evolution_logistic(num_agents, initial_food, food_growth, total_r
         ]
         food = food + food_production(food, food_growth, food_capacity)
     return agents, history, food
+
+def population_evolution_market(num_agents, total_rounds, trait_keys, resource_grid, delta):
+    agents, _ = first_generation(num_agents)
+    next_id = num_agents
+    history = initialize_tracker(trait_keys)
+    marriages = []
+
+    for round in range(total_rounds):
+        print(f"Round {round + 1}, population: {len(agents)}")
+        for a in agents:
+            produce(a, resource_grid)
+        relationships = build_relationships_kdtree(agents)
+        market_pairs = select_trade_pairs(relationships)
+        trades_completed = bilateral_market(market_pairs, delta, price_history)
+        consumed = {}
+        surplus_by_agent = {}
+        required = {}
+        for a in agents:
+            energy_gained, surplus = consume_from_inventory(a)
+            consumed[a.id] = energy_gained
+            surplus_by_agent[a.id] = surplus
+            required[a.id] = (a.genome["metabolic_rate"] / 100) ** 1.5
+        assign_food_to_relationships(relationships, surplus_by_agent)
+        before_survival_count = len(agents)
+        agents = [a for a in agents if survives(a, round, consumed[a.id])]
+        alive_ids = {a.id for a in agents}
+        after_survival_count = len(alive_ids)
+        marriages = [m for m in marriages if m.a.id in alive_ids and m.b.id in alive_ids]
+        relationships = build_relationships_kdtree(agents)
+        friendships = build_friendships(relationships)
+        new_marriages = build_marriages(friendships)
+        marriages += new_marriages
+        children1, next_id = reproduce(marriages, trait_keys, next_id)
+        children2, next_id = random_mating(agents, trait_keys, next_id, rate=0.01)
+        children = children1 + children2
+        agents.extend(children)
+        total_food_stock = total_food_inventory(agents)
+        record_population_state(agents, history, trait_keys, total_food_stock)
+        num_agents = len(agents)
+        avg_energy = np.mean([a.energy for a in agents]) if agents else 0
+        avg_food = np.mean([a.inventory[0] + a.inventory[1] for a in agents]) if agents else 0
+        births = len(children)
+        deaths = before_survival_count - after_survival_count
+        print(f"Trades: {trades_completed}, Births: {births}, Deaths: {deaths}, Avg Energy: {avg_energy:.2f}, Avg Food: {avg_food:.2f}")
+    return agents, history
+
+def determine_price(good, mrs_1, mrs_2, price_history):
+    reservation_price = (mrs_1 + mrs_2) / 2
+    n = len(price_history[good])
+    if n == 0:
+        price = reservation_price
+    else:
+        last_price = price_history[good][-1]
+        price = last_price + (1/(n+1)) * (reservation_price - last_price)
+    return price
+
+def trade(agent_1, agent_2, good, delta, price_history, t_cost):
+    goods_map = {"apple": 0, "barracuda": 1}
+    if good not in goods_map:
+        return "This is not a valid good."
+    i = goods_map[good]
+    mrs_1 = agent_1.mrs()[i]
+    mrs_2 = agent_2.mrs()[i]
+    if abs(mrs_1 - mrs_2) < 1e-8:
+        return False
+    if mrs_1 > mrs_2:
+        buyer, seller = agent_1, agent_2
+    else:
+        buyer, seller = agent_2, agent_1
+    price = determine_price(good, mrs_1, mrs_2, price_history)
+    buyer_price = price + t_cost
+    seller_price = price - t_cost
+    mrs_gap = abs(mrs_1 - mrs_2)
+    trade_qty = min(delta * mrs_gap, seller.inventory[i] * 0.25)
+    if trade_qty <= 1e-6:
+        return False
+    cash_trade = buyer_price * trade_qty
+    seller_revenue = seller_price * trade_qty
+    if seller.inventory[i] < trade_qty:
+        return False
+    if buyer.inventory[2] < cash_trade:
+        return False
+    proposed_buyer_inventory = buyer.inventory.copy()
+    proposed_seller_inventory = seller.inventory.copy()
+    proposed_buyer_inventory[i] += trade_qty
+    proposed_buyer_inventory[2] -= cash_trade
+    proposed_seller_inventory[i] -= trade_qty
+    proposed_seller_inventory[2] += seller_revenue
+    if np.any(proposed_buyer_inventory <= 0) or np.any(proposed_seller_inventory <= 0):
+        return False
+    u_buyer_old = buyer.log_true_utility(buyer.inventory)
+    u_seller_old = seller.log_true_utility(seller.inventory)
+    u_buyer_new = buyer.log_expected_utility(proposed_buyer_inventory)
+    u_seller_new = seller.log_expected_utility(proposed_seller_inventory)
+    if u_buyer_new > u_buyer_old and u_seller_new > u_seller_old:
+        buyer.inventory = proposed_buyer_inventory
+        seller.inventory = proposed_seller_inventory
+        price_history[good].append(price)
+        print(f"Agent {buyer.id} bought {trade_qty} {good} from agent {seller.id} for ${price:.2f}")
+        return True
+    return False
+
+def bilateral_market(market_pairs, delta, price_history):
+    trades_completed = 0
+    for rel in market_pairs:
+        a = rel.a
+        b = rel.b
+        t_cost = rel.distance
+        good = np.random.choice(["apple", "barracuda"])
+        success = trade(a, b, good, delta, price_history, t_cost)
+        if success:
+            trades_completed += 1
+    return trades_completed
+
+def total_food_inventory(agents):
+    return sum(a.inventory[0] + a.inventory[1] for a in agents)
 
 def plot_population(history):
     plt.figure(figsize=(6,4))
@@ -346,12 +521,19 @@ def plot_population_and_food(history):
 
     plt.show()
 
+grid_size = 50
+raw_apple = np.random.rand(grid_size, grid_size)
+resource_grid = {
+    "apple": normalize(gaussian_filter(raw_apple, sigma=5)),
+    "barracuda": normalize(gaussian_filter(1 - raw_apple, sigma=5))
+}
+
 start = time.time()
 trait_keys = ["intelligence", "wisdom", "strength", "dexterity", "charisma", "comeliness", "constitution", "metabolic_rate"]
-num_agents = 10000
+num_agents = 1000
 initial_food = 10*num_agents
 food_growth = num_agents/initial_food
-agents, history, food = population_evolution_logistic(num_agents, initial_food, food_growth, 35, trait_keys)
+agents, history = population_evolution_market(num_agents, 35, trait_keys, resource_grid, 0.1)
 end = time.time()
 print("Time:", end - start, "seconds")
 plot_population(history)

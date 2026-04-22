@@ -19,9 +19,9 @@ trait_keys = ["intelligence", "wisdom", "strength", "dexterity", "charisma", "co
 
 class Agent:
 
-    def __init__(self, name, generation):
+    def __init__(self, name, birth_round):
         self.id = name
-        self.generation = generation
+        self.birth_round = birth_round
         self.position = self.random_uniform_position()
         self.genome = {
             "gender": np.random.choice(["M","F"]),
@@ -46,7 +46,8 @@ class Agent:
         self.inventory = np.array(self.random_allocation(), dtype=float)
         self.saving_rate = np.random.rand()
         self.fitness = self.compute_fitness()
-        self.cell = self.get_cell(50)
+        self.x = self.get_cell(50)[0]
+        self.y = self.get_cell(50)[1]
         self.married = False
         self.partner_id = None
 
@@ -92,11 +93,10 @@ class Agent:
         self.w += lr * gradient
         self.expected_CD_exponents = softmax(self.w)
 
-    def learning(self, rounds=10):
-        for r in range(rounds):
-            apples_owned, barracudas_owned, cash_owned = self.random_allocation()
-            bundle_owned = apples_owned, barracudas_owned, cash_owned 
-            self.update_beliefs(bundle_owned)
+    def learning(self):
+        apples_owned, barracudas_owned, cash_owned = self.random_allocation()
+        bundle_owned = apples_owned, barracudas_owned, cash_owned 
+        self.update_beliefs(bundle_owned)
         return self.expected_CD_exponents
     
     def random_allocation(self):
