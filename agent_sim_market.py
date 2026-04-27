@@ -373,6 +373,7 @@ def random_mating(agents, trait_keys, next_id, current_round, rate=0.01, marriag
                 )
                 value += np.random.normal(0, 0.1 * value)
                 child.genome[trait] = max(0, value)
+            child.true_CD_exponents = parent_a.true_CD_exponents * p + parent_b.true_CD_exponents * (1 - p)
             direction = parent_b.position - parent_a.position
             orthogonal = np.array([-direction[1], direction[0]])
             orthogonal /= np.linalg.norm(orthogonal) + 1e-8
@@ -902,7 +903,7 @@ order_history = {
     "barracuda": []
 }
 include_reasons = {"executed", "buyer_lacks_cash", "seller_lacks_inventory"}
-num_rounds = 20
+num_rounds = 25
 
 # Run
 start = time.time()
@@ -914,7 +915,4 @@ plot_traits(history)
 plot_population_on_resource_grid(resource_grid, snapshot_history, 0)
 plot_population_on_resource_grid(resource_grid, snapshot_history, 10)
 plot_population_on_resource_grid(resource_grid, snapshot_history, 20)
-plot_empirical_supply_demand_filtered(order_history, "apple", num_rounds, include_reasons=include_reasons)
-plot_empirical_supply_demand_filtered(order_history, "barracuda", num_rounds, include_reasons=include_reasons)
-plot_order_scatter(order_history, "apple", num_rounds)
-plot_order_scatter(order_history, "barracuda", num_rounds)
+plot_population_on_resource_grid(resource_grid, snapshot_history, 25)

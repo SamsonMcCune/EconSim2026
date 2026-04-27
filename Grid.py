@@ -1,3 +1,5 @@
+import numpy as np
+
 class Grid:
     def __init__(self, grid_size_x, grid_size_y, x_y_subdivisions):
         self.x_y_subdivisions = x_y_subdivisions
