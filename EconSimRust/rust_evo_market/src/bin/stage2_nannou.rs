@@ -75,15 +75,25 @@ fn update(_app: &App, model: &mut Model, update: Update) {
     let real_dt = update.since_last.as_secs_f64();
     let scaled_dt = (real_dt * model.speed).min(0.5);
     let mut remaining = scaled_dt;
-    let mut last_stats = StepStats::default();
+    let mut frame_stats = StepStats::default();
 
     while remaining > 0.0 {
         let dt = remaining.min(model.substep);
-        last_stats = model.world.step(dt);
+        let s = model.world.step(dt);
+
+        frame_stats.trades_completed += s.trades_completed;
+        frame_stats.births += s.births;
+        frame_stats.deaths += s.deaths;
+
+        frame_stats.population = s.population;
+        frame_stats.avg_energy = s.avg_energy;
+        frame_stats.avg_food = s.avg_food;
+        frame_stats.avg_age = s.avg_age;
+
         remaining -= dt;
     }
 
-    model.last_stats = last_stats;
+    model.last_stats = frame_stats;
 }
 
 fn to_screen(pos: Vec2, rect: Rect) -> Point2 {
@@ -197,18 +207,25 @@ fn draw_overlay(draw: &Draw, rect: Rect, model: &Model) {
 
     let left = rect.left() + 20.0;
     let top = rect.top() - 20.0;
+    let box_w = 220.0;
+    let box_h = 340.0;
+    let box_x = left + box_w / 2.0 - 10.0;
+    let box_y = top - box_h / 2.0 + 10.0;
 
     draw.rect()
-        .x_y(left + 170.0, top - 120.0)
-        .w_h(360.0, 260.0)
-        .rgba(0.0, 0.0, 0.0, 0.45);
+        .x_y(box_x, box_y)
+        .w_h(box_w, box_h)
+        .rgba(0.0, 0.0, 0.0, 0.70)
+        .no_fill()
+        .stroke(WHITE)
+        .stroke_weight(2.0);
 
     draw.text(&text)
-        .x_y(left + 10.0, top - 10.0)
+        .x_y(left + 100.0, top - 90.0)
         .left_justify()
-        .align_top()
-        .font_size(16)
-        .rgba(1.0, 1.0, 1.0, 0.95);
+        .align_text_top()
+        .font_size(18)
+        .rgba(1.0, 1.0, 1.0, 1.0);
 
     let history = &model.world.history.population;
     if history.len() > 2 {

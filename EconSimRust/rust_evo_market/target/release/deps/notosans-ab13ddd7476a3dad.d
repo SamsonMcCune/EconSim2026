@@ -1,0 +1,13 @@
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\notosans-ab13ddd7476a3dad.d: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Bold.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-BoldItalic.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Italic.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Regular.ttf
+
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\libnotosans-ab13ddd7476a3dad.rlib: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Bold.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-BoldItalic.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Italic.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Regular.ttf
+
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\libnotosans-ab13ddd7476a3dad.rmeta: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Bold.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-BoldItalic.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Italic.ttf C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Regular.ttf
+
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0\src\lib.rs:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Bold.ttf:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-BoldItalic.ttf:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Italic.ttf:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\notosans-0.1.0/fonts/NotoSans-Regular.ttf:
+
+# env-dep:CARGO_MANIFEST_DIR=C:\\Users\\smccune\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\notosans-0.1.0

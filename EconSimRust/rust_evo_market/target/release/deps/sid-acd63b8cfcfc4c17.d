@@ -1,0 +1,11 @@
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\sid-acd63b8cfcfc4c17.d: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_list.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_range.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_vector.rs
+
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\libsid-acd63b8cfcfc4c17.rlib: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_list.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_range.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_vector.rs
+
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\libsid-acd63b8cfcfc4c17.rmeta: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_list.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_range.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_vector.rs
+
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\lib.rs:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id.rs:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_list.rs:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_range.rs:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sid-0.6.1\src\id_vector.rs:

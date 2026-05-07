@@ -1194,7 +1194,7 @@ pub fn survives_continuous(agent: &mut Agent, current_time: f64, consumed_food: 
     agent.energy -= age_cost;
     let constitution = agent.genome.constitution / 100.0;
     agent.energy += 0.2 * constitution * metabolic_cost;
-    agent.energy > 0.0
+    agent.energy > 0.1
 }
 
 pub fn reproduce<R: Rng + ?Sized>(
@@ -1305,7 +1305,7 @@ pub fn random_mating<R: Rng + ?Sized>(
         }
 
         let rel = Relationship::new(parent_a, parent_b, rng);
-        if rel.distance > 0.1 {
+        if rel.distance > 0.01 {
             continue;
         }
 
@@ -1711,11 +1711,68 @@ pub struct ContinuousConfig {
     pub grid_size: usize,
     pub gaussian_sigma: f64,
     pub trade_delta: f64,
+
+    /// Mean waiting time, in model-time units, between learning updates for one agent.
+    /// Stage 2 interprets this as a continuous-time rate: rate = 1 / learning_interval.
     pub learning_interval: f64,
+
+    /// Mean waiting time, in model-time units, between trade opportunities for one eligible pair.
+    /// Stage 2 interprets this as a continuous-time rate: rate = 1 / market_interval.
     pub market_interval: f64,
+
+    /// Mean waiting time, in model-time units, between birth opportunities for one eligible marriage.
+    /// Stage 2 interprets this as a continuous-time rate: rate = 1 / reproduction_interval.
     pub reproduction_interval: f64,
+
+    /// Expected random-mating attempts per agent per model-time unit.
     pub random_mating_rate: f64,
     pub marriage_penalty: f64,
+
+    /// Maximum movement speed in normalized world units per model-time unit.
+    /// The world is 0..1 in both x and y, so 0.04 means an average agent can
+    /// cross about 4% of the map per model-time unit. Set to 0.0 to disable movement.
+    pub movement_speed: f64,
+
+    /// Finite-difference probe distance used to estimate the food/resource gradient.
+    /// A good value is roughly one resource-grid cell: 1.0 / grid_size.
+    pub movement_probe_distance: f64,
+
+    /// Weight on expected food-location utility. This uses the agent's expected
+    /// Cobb-Douglas utility, so agents move according to what they currently believe.
+    pub movement_food_weight: f64,
+
+    /// Weight on spouse closeness for married agents. Keep this larger than
+    /// movement_food_weight if married agents should prefer staying near spouses
+    /// over chasing better resource cells.
+    pub movement_spouse_weight: f64,
+
+    /// Weight on social attraction for single agents. This pulls single agents
+    /// toward other people instead of letting them settle alone on a food optimum.
+    pub movement_single_social_weight: f64,
+
+    /// Distance scale for single-agent social attraction. Larger values make
+    /// single agents notice other people from farther away.
+    pub movement_single_social_scale: f64,
+
+    /// Once a single agent has someone within this distance, the extra long-range
+    /// search pressure turns off. Local social attraction can still operate.
+    pub movement_single_settle_distance: f64,
+
+    /// Extra search pressure toward the nearest person while a single agent has
+    /// nobody within movement_single_settle_distance.
+    pub movement_single_search_weight: f64,
+
+    /// How far ahead agents imagine harvesting when evaluating a location.
+    /// This affects movement beliefs only; actual production still happens in produce_dt.
+    pub movement_food_lookahead: f64,
+
+    /// Energy cost per normalized unit of movement. The actual cost is also scaled
+    /// by metabolic rate and reduced by dexterity.
+    pub movement_energy_cost: f64,
+
+    /// Ignore gradients smaller than this norm to avoid visual/numerical jitter.
+    pub movement_min_gradient: f64,
+
     pub seed: u64,
 }
 
@@ -1731,20 +1788,892 @@ impl Default for ContinuousConfig {
             reproduction_interval: 0.50,
             random_mating_rate: 0.01,
             marriage_penalty: 0.3,
+            movement_speed: 0.04,
+            movement_probe_distance: 1.0 / 50.0,
+            movement_food_weight: 1.0,
+            movement_spouse_weight: 10.0,
+            movement_single_social_weight: 3.0,
+            movement_single_social_scale: 0.12,
+            movement_single_settle_distance: 0.08,
+            movement_single_search_weight: 1.0,
+            movement_food_lookahead: 1.0,
+            movement_energy_cost: 1.0,
+            movement_min_gradient: 1.0e-6,
             seed: 67,
         }
     }
 }
 
+impl ContinuousConfig {
+    pub fn learning_rate_per_agent(&self) -> f64 {
+        interval_to_rate(self.learning_interval)
+    }
+
+    pub fn trade_rate_per_pair(&self) -> f64 {
+        interval_to_rate(self.market_interval)
+    }
+
+    pub fn birth_rate_per_marriage(&self) -> f64 {
+        interval_to_rate(self.reproduction_interval)
+    }
+
+    pub fn marriage_rate_per_friendship(&self) -> f64 {
+        // Friendships became marriages immediately in the discrete model once a round reached
+        // the marriage step. In continuous time, use a hazard rate instead of a synchronized sweep.
+        interval_to_rate(self.reproduction_interval)
+    }
+
+    pub fn random_mating_attempt_rate_per_agent(&self) -> f64 {
+        self.random_mating_rate.max(0.0)
+    }
+}
+
+pub const CONTINUOUS_HISTORY_SAMPLE_INTERVAL: f64 = 0.10;
+pub const CONTINUOUS_MARKET_SAMPLE_INTERVAL: f64 = 0.25;
+pub const CONTINUOUS_SURPLUS_SMOOTHING_RATE: f64 = 3.0;
+pub const CONTINUOUS_MAX_ENERGY_BIRTH_MULTIPLIER: f64 = 4.0;
+
 #[derive(Clone, Debug, Default)]
 pub struct StepStats {
     pub trades_completed: usize,
+    pub trade_attempts: usize,
     pub births: usize,
     pub deaths: usize,
+    pub learning_events: usize,
+    pub new_marriages: usize,
     pub avg_energy: f64,
     pub avg_food: f64,
     pub avg_age: f64,
     pub population: usize,
+    pub time: f64,
+}
+
+impl StepStats {
+    pub fn accumulate(&mut self, other: StepStats) {
+        self.trades_completed += other.trades_completed;
+        self.trade_attempts += other.trade_attempts;
+        self.births += other.births;
+        self.deaths += other.deaths;
+        self.learning_events += other.learning_events;
+        self.new_marriages += other.new_marriages;
+        self.avg_energy = other.avg_energy;
+        self.avg_food = other.avg_food;
+        self.avg_age = other.avg_age;
+        self.population = other.population;
+        self.time = other.time;
+    }
+}
+
+pub fn interval_to_rate(interval: f64) -> f64 {
+    if interval.is_finite() && interval > EPS {
+        1.0 / interval
+    } else {
+        0.0
+    }
+}
+
+pub fn event_probability(rate_per_time: f64, dt: f64) -> f64 {
+    if !rate_per_time.is_finite() || !dt.is_finite() || rate_per_time <= 0.0 || dt <= 0.0 {
+        0.0
+    } else {
+        (1.0 - (-rate_per_time * dt).exp()).clamp(0.0, 1.0)
+    }
+}
+
+pub fn sample_poisson_count<R: Rng + ?Sized>(lambda: f64, rng: &mut R) -> usize {
+    if !lambda.is_finite() || lambda <= 0.0 {
+        return 0;
+    }
+
+    // Knuth's exact sampler is excellent for the small lambdas created by GUI substeps.
+    // The normal approximation prevents rare high-speed settings from looping excessively.
+    if lambda < 30.0 {
+        let limit = (-lambda).exp();
+        let mut k = 0usize;
+        let mut product = 1.0;
+        loop {
+            k += 1;
+            product *= rng.gen::<f64>();
+            if product <= limit {
+                return k - 1;
+            }
+        }
+    }
+
+    let normal = Normal::new(lambda, lambda.sqrt().max(EPS)).unwrap();
+    normal.sample(rng).round().max(0.0) as usize
+}
+
+pub fn refresh_agent_derived_fields(agent: &mut Agent, grid_size: usize) {
+    agent.radius = 0.02 + 0.08 * (agent.genome.dexterity / 200.0);
+    agent.genome_vector = dictionary_to_vector(&agent.genome);
+    let vector_norm = norm(&agent.genome_vector) + EPS;
+    for i in 0..8 {
+        agent.genome_vector_normalized[i] = agent.genome_vector[i] / vector_norm;
+    }
+    agent.fitness = agent.compute_fitness();
+    let (x, y) = agent.get_cell(grid_size);
+    agent.x = x;
+    agent.y = y;
+}
+
+
+pub fn bilinear_grid_sample(grid: &[Vec<f64>], position: Vec2) -> f64 {
+    let n = grid.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return grid[0].get(0).copied().unwrap_or(0.0);
+    }
+
+    let max_idx = (n - 1) as f64;
+    let x = position.x.clamp(0.0, 1.0) * max_idx;
+    let y = position.y.clamp(0.0, 1.0) * max_idx;
+
+    let x0 = x.floor() as usize;
+    let y0 = y.floor() as usize;
+    let x1 = (x0 + 1).min(n - 1);
+    let y1 = (y0 + 1).min(n - 1);
+    let tx = x - x0 as f64;
+    let ty = y - y0 as f64;
+
+    let v00 = grid[x0][y0];
+    let v10 = grid[x1][y0];
+    let v01 = grid[x0][y1];
+    let v11 = grid[x1][y1];
+
+    let vx0 = v00 * (1.0 - tx) + v10 * tx;
+    let vx1 = v01 * (1.0 - tx) + v11 * tx;
+    vx0 * (1.0 - ty) + vx1 * ty
+}
+
+pub fn expected_food_bundle_at_position(
+    agent: &Agent,
+    resource_grid: &ResourceGrid,
+    position: Vec2,
+    food_lookahead: f64,
+) -> [f64; 3] {
+    let apple_yield = bilinear_grid_sample(&resource_grid.apple, position).max(EPS);
+    let fish_yield = bilinear_grid_sample(&resource_grid.barracuda, position).max(EPS);
+    let strength = (agent.genome.strength / 100.0).max(0.0);
+    let metabolism = (agent.genome.metabolic_rate / 100.0).max(EPS);
+    let horizon = food_lookahead.max(0.0);
+
+    let expected_apples = agent.inventory[0].max(EPS) + horizon * strength * apple_yield / (metabolism + EPS);
+    let expected_fish = agent.inventory[1].max(EPS) + horizon * strength * fish_yield / (metabolism + EPS);
+    let expected_cash = agent.inventory[2].max(EPS);
+    [expected_apples, expected_fish, expected_cash]
+}
+
+pub fn expected_food_location_utility(
+    agent: &Agent,
+    resource_grid: &ResourceGrid,
+    position: Vec2,
+    config: &ContinuousConfig,
+) -> f64 {
+    let bundle = expected_food_bundle_at_position(
+        agent,
+        resource_grid,
+        position,
+        config.movement_food_lookahead,
+    );
+    agent.log_expected_utility(bundle)
+}
+
+pub fn expected_food_location_gradient(
+    agent: &Agent,
+    resource_grid: &ResourceGrid,
+    config: &ContinuousConfig,
+) -> Vec2 {
+    let h = config.movement_probe_distance.max(1.0e-4).min(0.25);
+    let p = agent.position;
+
+    let x_plus = (p.x + h).min(1.0);
+    let x_minus = (p.x - h).max(0.0);
+    let y_plus = (p.y + h).min(1.0);
+    let y_minus = (p.y - h).max(0.0);
+
+    let ux_plus = expected_food_location_utility(
+        agent,
+        resource_grid,
+        Vec2::new(x_plus, p.y),
+        config,
+    );
+    let ux_minus = expected_food_location_utility(
+        agent,
+        resource_grid,
+        Vec2::new(x_minus, p.y),
+        config,
+    );
+    let uy_plus = expected_food_location_utility(
+        agent,
+        resource_grid,
+        Vec2::new(p.x, y_plus),
+        config,
+    );
+    let uy_minus = expected_food_location_utility(
+        agent,
+        resource_grid,
+        Vec2::new(p.x, y_minus),
+        config,
+    );
+
+    let dx = (x_plus - x_minus).max(EPS);
+    let dy = (y_plus - y_minus).max(EPS);
+    Vec2::new((ux_plus - ux_minus) / dx, (uy_plus - uy_minus) / dy)
+}
+
+pub fn spouse_closeness_gradient(agent: &Agent, partner_position: Option<Vec2>) -> Vec2 {
+    if let Some(partner_position) = partner_position {
+        // This is the exact gradient of U_spouse = -distance_to_spouse^2.
+        // It points straight toward the spouse and does not vanish when spouses are far apart.
+        partner_position.minus(agent.position).scale(2.0)
+    } else {
+        Vec2::default()
+    }
+}
+
+pub fn single_social_gradient(
+    agent: &Agent,
+    positions: &[(usize, Vec2)],
+    config: &ContinuousConfig,
+) -> Vec2 {
+    if agent.married || positions.len() <= 1 || config.movement_single_social_weight <= 0.0 {
+        return Vec2::default();
+    }
+
+    let social_scale = config.movement_single_social_scale.max(EPS);
+    let mut gradient = Vec2::default();
+    let mut nearest_distance = f64::INFINITY;
+    let mut nearest_direction = Vec2::default();
+
+    for (other_id, other_position) in positions.iter().copied() {
+        if other_id == agent.id {
+            continue;
+        }
+
+        let to_other = other_position.minus(agent.position);
+        let distance = to_other.norm();
+        if !distance.is_finite() || distance <= EPS {
+            continue;
+        }
+
+        if distance < nearest_distance {
+            nearest_distance = distance;
+            nearest_direction = to_other.scale(1.0 / distance);
+        }
+
+        // Gradient of exp(-distance / social_scale), which is a smooth local density utility.
+        let density_gradient_scale = (-distance / social_scale).exp() / (social_scale * distance);
+        gradient = gradient.plus(to_other.scale(density_gradient_scale));
+    }
+
+    // Long-range search: if nobody is close enough, keep moving toward the nearest person.
+    // This prevents single agents from settling forever on isolated food maxima.
+    if nearest_distance.is_finite()
+        && nearest_distance > config.movement_single_settle_distance.max(0.0)
+    {
+        gradient = gradient.plus(
+            nearest_direction.scale(config.movement_single_search_weight.max(0.0)),
+        );
+    }
+
+    gradient.scale(config.movement_single_social_weight.max(0.0))
+}
+
+pub fn perceived_movement_gradient(
+    agent: &Agent,
+    resource_grid: &ResourceGrid,
+    partner_position: Option<Vec2>,
+    positions: &[(usize, Vec2)],
+    config: &ContinuousConfig,
+) -> Vec2 {
+    let food_gradient = expected_food_location_gradient(agent, resource_grid, config)
+        .scale(config.movement_food_weight.max(0.0));
+
+    let spouse_gradient = if agent.married {
+        spouse_closeness_gradient(agent, partner_position)
+            .scale(config.movement_spouse_weight.max(0.0))
+    } else {
+        Vec2::default()
+    };
+
+    let social_gradient = single_social_gradient(agent, positions, config);
+
+    food_gradient.plus(spouse_gradient).plus(social_gradient)
+}
+
+pub fn movement_energy_cost(agent: &Agent, distance_moved: f64, config: &ContinuousConfig) -> f64 {
+    if distance_moved <= 0.0 || config.movement_energy_cost <= 0.0 {
+        return 0.0;
+    }
+
+    let metabolism = (agent.genome.metabolic_rate / 100.0).max(0.0);
+
+    // Higher dexterity reduces the cost of the same physical movement.
+    // dex=0 => 1.0x cost, dex=100 => 0.5x cost, dex=200 => 0.33x cost.
+    let dexterity = (agent.genome.dexterity / 100.0).max(0.0);
+    let dexterity_cost_multiplier = 1.0 / (1.0 + dexterity);
+
+    config.movement_energy_cost.max(0.0)
+        * metabolism
+        * distance_moved.max(0.0)
+        * dexterity_cost_multiplier
+}
+
+pub fn move_agents_continuous_dt(
+    agents: &mut [Agent],
+    resource_grid: &ResourceGrid,
+    config: &ContinuousConfig,
+    dt: f64,
+) -> usize {
+    if agents.is_empty()
+        || resource_grid.size() == 0
+        || !dt.is_finite()
+        || dt <= 0.0
+        || !config.movement_speed.is_finite()
+        || config.movement_speed <= 0.0
+    {
+        return 0;
+    }
+
+    // Compute all movement decisions from a snapshot of old positions. This avoids order effects
+    // where agents later in the vector chase agents that already moved earlier in the same tick.
+    let old_positions = agents
+        .iter()
+        .map(|agent| (agent.id, agent.position))
+        .collect::<Vec<(usize, Vec2)>>();
+    let old_positions_by_id = old_positions.iter().copied().collect::<HashMap<usize, Vec2>>();
+
+    let mut proposed_positions = Vec::with_capacity(agents.len());
+    for agent in agents.iter() {
+        let partner_position = if agent.married {
+            agent
+                .partner_id
+                .and_then(|partner_id| old_positions_by_id.get(&partner_id).copied())
+        } else {
+            None
+        };
+
+        let gradient = perceived_movement_gradient(
+            agent,
+            resource_grid,
+            partner_position,
+            &old_positions,
+            config,
+        );
+        let gradient_norm = gradient.norm();
+
+        if !gradient_norm.is_finite() || gradient_norm <= config.movement_min_gradient.max(0.0) {
+            proposed_positions.push(agent.position);
+            continue;
+        }
+
+        let direction = gradient.scale(1.0 / gradient_norm);
+        let step_distance = config.movement_speed.max(0.0) * dt;
+        proposed_positions.push(agent.position.plus(direction.scale(step_distance)).clamp01());
+    }
+
+    let grid_size = resource_grid.size();
+    let mut moved = 0usize;
+    for (agent, proposed_position) in agents.iter_mut().zip(proposed_positions.into_iter()) {
+        let distance_moved = agent.position.distance(proposed_position);
+        if distance_moved <= EPS {
+            continue;
+        }
+
+        agent.position = proposed_position;
+        let (x, y) = agent.get_cell(grid_size);
+        agent.x = x;
+        agent.y = y;
+        let energy_cost = movement_energy_cost(&*agent, distance_moved, config);
+        agent.energy -= energy_cost;
+        moved += 1;
+    }
+
+    moved
+}
+
+pub fn build_relationships_spatial<R: Rng + ?Sized>(agents: &[Agent], rng: &mut R) -> HashMap<(usize, usize), Relationship> {
+    // Continuous-time GUI helper. This preserves the same local-pair rule as the Python
+    // KDTree version: only candidate pairs within max_radius are tested, then the
+    // radius-overlap condition is applied. It avoids the O(n^2) full scan each time
+    // relationships must be refreshed. Stage 1 still uses the original discrete path.
+    const MAX_RADIUS: f64 = 0.1;
+    let cell_size = MAX_RADIUS;
+    let mut cells: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+
+    for (idx, agent) in agents.iter().enumerate() {
+        let cx = (agent.position.x / cell_size).floor() as i32;
+        let cy = (agent.position.y / cell_size).floor() as i32;
+        cells.entry((cx, cy)).or_default().push(idx);
+    }
+
+    let mut relationships = HashMap::new();
+    let max_radius2 = MAX_RADIUS * MAX_RADIUS;
+
+    for (&(cx, cy), indices) in cells.iter() {
+        for &i in indices {
+            for nx in (cx - 1)..=(cx + 1) {
+                for ny in (cy - 1)..=(cy + 1) {
+                    let Some(neighbor_indices) = cells.get(&(nx, ny)) else { continue; };
+                    for &j in neighbor_indices {
+                        if j <= i {
+                            continue;
+                        }
+
+                        let a = &agents[i];
+                        let b = &agents[j];
+                        let dx = a.position.x - b.position.x;
+                        let dy = a.position.y - b.position.y;
+                        let dist2 = dx * dx + dy * dy;
+                        if dist2 > max_radius2 {
+                            continue;
+                        }
+
+                        let r_sum = a.radius + b.radius;
+                        if dist2 <= r_sum * r_sum {
+                            let rel = Relationship::new(a, b, rng);
+                            relationships.insert(rel.key, rel);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    relationships
+}
+
+pub fn build_relationships_with_memory<R: Rng + ?Sized>(
+    agents: &[Agent],
+    previous: &HashMap<(usize, usize), Relationship>,
+    rng: &mut R,
+) -> HashMap<(usize, usize), Relationship> {
+    let mut relationships = build_relationships_spatial(agents, rng);
+    for (key, rel) in relationships.iter_mut() {
+        if let Some(old) = previous.get(key) {
+            // Movement causes frequent relationship refreshes. Preserve social memory for
+            // pairs that remain local, while the newly built Relationship still carries
+            // the updated distance and transaction-cost fields.
+            rel.score = old.score;
+            rel.friends = old.friends;
+            rel.married = old.married;
+            rel.children = old.children;
+            rel.food_surplus = old.food_surplus;
+        }
+    }
+    relationships
+}
+
+pub fn continuous_learning_dt<R: Rng + ?Sized>(
+    agents: &mut [Agent],
+    learning_rate_per_agent: f64,
+    dt: f64,
+    rng: &mut R,
+) -> usize {
+    let mut events = 0usize;
+    let lambda = learning_rate_per_agent.max(0.0) * dt.max(0.0);
+    for agent in agents {
+        let n_events = sample_poisson_count(lambda, rng);
+        for _ in 0..n_events {
+            let _ = agent.learning(rng);
+        }
+        events += n_events;
+    }
+    events
+}
+
+pub fn continuous_bilateral_market_dt<R: Rng + ?Sized>(
+    relationships: &HashMap<(usize, usize), Relationship>,
+    agents: &mut [Agent],
+    delta: f64,
+    price_history: &mut PriceHistory,
+    trade_rate_per_pair: f64,
+    dt: f64,
+    rng: &mut R,
+) -> (usize, usize, Vec<OrderRecord>) {
+    let trade_probability = event_probability(trade_rate_per_pair, dt);
+    if trade_probability <= 0.0 || relationships.is_empty() || agents.len() < 2 {
+        return (0, 0, Vec::new());
+    }
+
+    let mut rels = relationships.values().cloned().collect::<Vec<_>>();
+    rels.shuffle(rng);
+    rels.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+    let map = id_to_index_map(agents);
+    let mut used = HashSet::new();
+    let mut trades_completed = 0usize;
+    let mut trade_attempts = 0usize;
+    let mut trade_log = Vec::new();
+
+    for rel in rels {
+        if used.contains(&rel.a_id) || used.contains(&rel.b_id) {
+            continue;
+        }
+        if rng.gen::<f64>() >= trade_probability {
+            continue;
+        }
+
+        let Some(&ia) = map.get(&rel.a_id) else { continue; };
+        let Some(&ib) = map.get(&rel.b_id) else { continue; };
+        if ia == ib {
+            continue;
+        }
+
+        used.insert(rel.a_id);
+        used.insert(rel.b_id);
+        trade_attempts += 1;
+
+        let good = {
+            let a = &agents[ia];
+            let b = &agents[ib];
+            choose_trade_good(a, b)
+        };
+        let (a, b) = two_mut(agents, ia, ib);
+        let result = trade(a, b, good, delta, price_history, rel.distance);
+        if result.success {
+            trades_completed += 1;
+        }
+        trade_log.push(result);
+    }
+
+    (trades_completed, trade_attempts, trade_log)
+}
+
+pub fn prune_marriages_and_refresh_partner_flags(agents: &mut [Agent], marriages: &mut Vec<Relationship>) {
+    let alive_ids = agents.iter().map(|a| a.id).collect::<HashSet<_>>();
+    marriages.retain(|m| alive_ids.contains(&m.a_id) && alive_ids.contains(&m.b_id));
+
+    for agent in agents.iter_mut() {
+        agent.married = false;
+        agent.partner_id = None;
+    }
+
+    let map = id_to_index_map(agents);
+    for marriage in marriages.iter_mut() {
+        let Some(&ia) = map.get(&marriage.a_id) else { continue; };
+        let Some(&ib) = map.get(&marriage.b_id) else { continue; };
+        if ia == ib {
+            continue;
+        }
+        marriage.married = true;
+        let (a, b) = two_mut(agents, ia, ib);
+        a.married = true;
+        b.married = true;
+        a.partner_id = Some(b.id);
+        b.partner_id = Some(a.id);
+    }
+}
+
+pub fn continuous_consume_and_survive_dt(
+    agents: &mut Vec<Agent>,
+    marriages: &mut Vec<Relationship>,
+    current_time: f64,
+    dt: f64,
+) -> (usize, HashMap<usize, f64>) {
+    let mut consumed: HashMap<usize, f64> = HashMap::new();
+    let mut surplus_by_agent: HashMap<usize, f64> = HashMap::new();
+
+    for agent in agents.iter_mut() {
+        let (energy_gained, surplus) = consume_from_inventory_dt(agent, dt);
+        consumed.insert(agent.id, energy_gained);
+        surplus_by_agent.insert(agent.id, surplus);
+    }
+
+    let before = agents.len();
+    let mut survivors = Vec::with_capacity(agents.len());
+    for mut agent in agents.drain(..) {
+        let ate = *consumed.get(&agent.id).unwrap_or(&0.0);
+        if survives_continuous(&mut agent, current_time, ate, dt) {
+            survivors.push(agent);
+        }
+    }
+    *agents = survivors;
+    prune_marriages_and_refresh_partner_flags(agents, marriages);
+
+    let deaths = before.saturating_sub(agents.len());
+    (deaths, surplus_by_agent)
+}
+
+fn pair_surplus(food_balance: &HashMap<usize, f64>, a_id: usize, b_id: usize) -> f64 {
+    let surplus_a = *food_balance.get(&a_id).unwrap_or(&0.0);
+    let surplus_b = *food_balance.get(&b_id).unwrap_or(&0.0);
+    (surplus_a + surplus_b).max(0.0)
+}
+
+pub fn update_food_surplus_continuous(
+    relationships: &mut HashMap<(usize, usize), Relationship>,
+    marriages: &mut [Relationship],
+    food_balance: &HashMap<usize, f64>,
+    smoothing_rate: f64,
+    dt: f64,
+) {
+    let w = event_probability(smoothing_rate, dt);
+    for rel in relationships.values_mut() {
+        let target = pair_surplus(food_balance, rel.a_id, rel.b_id);
+        rel.food_surplus = (1.0 - w) * rel.food_surplus + w * target;
+    }
+    for marriage in marriages.iter_mut() {
+        let target = pair_surplus(food_balance, marriage.a_id, marriage.b_id);
+        marriage.food_surplus = (1.0 - w) * marriage.food_surplus + w * target;
+    }
+}
+
+pub fn form_marriages_continuous_dt<R: Rng + ?Sized>(
+    agents: &mut [Agent],
+    relationships: &HashMap<(usize, usize), Relationship>,
+    marriages: &mut Vec<Relationship>,
+    marriage_rate_per_friendship: f64,
+    dt: f64,
+    rng: &mut R,
+) -> usize {
+    let marriage_probability = event_probability(marriage_rate_per_friendship, dt);
+    if marriage_probability <= 0.0 || agents.len() < 2 {
+        return 0;
+    }
+
+    let mut candidates = relationships
+        .values()
+        .filter(|r| r.friends)
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.shuffle(rng);
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+    let map = id_to_index_map(agents);
+    let mut formed = 0usize;
+
+    for mut rel in candidates {
+        if rng.gen::<f64>() >= marriage_probability {
+            continue;
+        }
+        let Some(&ia) = map.get(&rel.a_id) else { continue; };
+        let Some(&ib) = map.get(&rel.b_id) else { continue; };
+        if ia == ib {
+            continue;
+        }
+
+        let (a, b) = two_mut(agents, ia, ib);
+        if a.genome.gender == b.genome.gender {
+            continue;
+        }
+        if a.married || b.married {
+            continue;
+        }
+        if (a.birth_round - b.birth_round).abs() > 2.0 {
+            continue;
+        }
+
+        rel.married = true;
+        a.married = true;
+        b.married = true;
+        a.partner_id = Some(b.id);
+        b.partner_id = Some(a.id);
+        marriages.push(rel);
+        formed += 1;
+    }
+
+    formed
+}
+
+pub fn continuous_marriage_fertility(parent_a: &Agent, parent_b: &Agent, surplus: f64) -> f64 {
+    let avg_fitness = (parent_a.fitness + parent_b.fitness) / 2.0;
+    (0.2 * surplus.tanh() + 0.7 * (avg_fitness / 100.0).tanh()).clamp(0.0, 1.0)
+}
+
+pub fn spawn_child_continuous<R: Rng + ?Sized>(
+    parent_a: &Agent,
+    parent_b: &Agent,
+    child_id: usize,
+    current_time: f64,
+    grid_size: usize,
+    initial_energy: f64,
+    rng: &mut R,
+) -> Agent {
+    let mut child = Agent::new(child_id, current_time, rng, grid_size);
+
+    for trait_key in TraitKey::ALL {
+        let p = rng.gen::<f64>();
+        let mut value = parent_a.genome.get(trait_key) * p + parent_b.genome.get(trait_key) * (1.0 - p);
+        value += Normal::new(0.0, (0.1 * value.abs()).max(EPS)).unwrap().sample(rng);
+        child.genome.set(trait_key, value.max(0.0));
+    }
+
+    let direction = parent_b.position.minus(parent_a.position);
+    let orthogonal = direction.orthogonal().normalized();
+    let t = rng.gen::<f64>();
+    let base_pos = parent_a.position.plus(direction.scale(t));
+    let offset = Normal::new(0.0, 0.02).unwrap().sample(rng);
+    child.position = base_pos.plus(orthogonal.scale(offset)).clamp01();
+
+    refresh_agent_derived_fields(&mut child, grid_size);
+    child.energy = initial_energy.max(0.05);
+    child.inventory = [0.0, 0.0, 1.0];
+    child.married = false;
+    child.partner_id = None;
+    child.relationships.clear();
+    child
+}
+
+pub fn reproduce_marriages_continuous_dt<R: Rng + ?Sized>(
+    marriages: &mut [Relationship],
+    agents: &mut [Agent],
+    next_id_start: usize,
+    current_time: f64,
+    grid_size: usize,
+    birth_rate_per_marriage: f64,
+    dt: f64,
+    rng: &mut R,
+) -> (Vec<Agent>, usize) {
+    let mut children = Vec::new();
+    let mut next_id = next_id_start;
+    let map = id_to_index_map(agents);
+
+    for marriage in marriages.iter_mut() {
+        let Some(&ia) = map.get(&marriage.a_id) else { continue; };
+        let Some(&ib) = map.get(&marriage.b_id) else { continue; };
+        if ia == ib {
+            continue;
+        }
+
+        let (parent_a, parent_b) = two_mut(agents, ia, ib);
+        if parent_a.genome.gender == parent_b.genome.gender {
+            continue;
+        }
+
+        let reproduction_cost_a = 0.5 * (parent_a.genome.metabolic_rate / 100.0);
+        let reproduction_cost_b = 0.5 * (parent_b.genome.metabolic_rate / 100.0);
+        if parent_a.energy <= reproduction_cost_a || parent_b.energy <= reproduction_cost_b {
+            continue;
+        }
+
+        let surplus_a = (parent_a.energy - 1.0).max(0.0);
+        let surplus_b = (parent_b.energy - 1.0).max(0.0);
+        let available_energy = surplus_a + surplus_b;
+        let avg_cost = ((reproduction_cost_a + reproduction_cost_b) / 2.0).max(EPS);
+        if available_energy <= EPS {
+            continue;
+        }
+
+        let fertility = continuous_marriage_fertility(parent_a, parent_b, marriage.food_surplus);
+        let energy_multiplier = (available_energy / avg_cost)
+            .max(0.0)
+            .min(CONTINUOUS_MAX_ENERGY_BIRTH_MULTIPLIER);
+        let lambda = birth_rate_per_marriage.max(0.0) * fertility * energy_multiplier * dt.max(0.0);
+        let birth_events = sample_poisson_count(lambda, rng);
+
+        for _ in 0..birth_events {
+            if parent_a.energy <= reproduction_cost_a || parent_b.energy <= reproduction_cost_b {
+                break;
+            }
+            let current_available = (parent_a.energy - 1.0).max(0.0) + (parent_b.energy - 1.0).max(0.0);
+            if current_available <= EPS {
+                break;
+            }
+
+            parent_a.energy -= reproduction_cost_a / 2.0;
+            parent_b.energy -= reproduction_cost_b / 2.0;
+            let child_energy = 0.5 * avg_cost.min(current_available).max(EPS);
+            let child = spawn_child_continuous(
+                parent_a,
+                parent_b,
+                next_id,
+                current_time,
+                grid_size,
+                child_energy,
+                rng,
+            );
+            next_id += 1;
+            marriage.children += 1;
+            children.push(child);
+        }
+    }
+
+    (children, next_id)
+}
+
+pub fn random_mating_continuous_dt<R: Rng + ?Sized>(
+    agents: &mut [Agent],
+    next_id_start: usize,
+    current_time: f64,
+    grid_size: usize,
+    rng: &mut R,
+    attempt_rate_per_agent: f64,
+    marriage_penalty: f64,
+    dt: f64,
+) -> (Vec<Agent>, usize) {
+    let mut children = Vec::new();
+    let mut next_id = next_id_start;
+    let n = agents.len();
+    if n < 2 {
+        return (children, next_id);
+    }
+
+    let expected_attempts = attempt_rate_per_agent.max(0.0) * n as f64 * dt.max(0.0);
+    let attempts = sample_poisson_count(expected_attempts, rng);
+
+    for _ in 0..attempts {
+        let ia = rng.gen_range(0..n);
+        let mut ib = rng.gen_range(0..(n - 1));
+        if ib >= ia {
+            ib += 1;
+        }
+
+        let (parent_a, parent_b) = two_mut(agents, ia, ib);
+        if parent_a.genome.gender == parent_b.genome.gender {
+            continue;
+        }
+
+        let prob_a = if parent_a.married { marriage_penalty } else { 1.0 };
+        let prob_b = if parent_b.married { marriage_penalty } else { 1.0 };
+        if rng.gen::<f64>() > prob_a || rng.gen::<f64>() > prob_b {
+            continue;
+        }
+
+        let rel = Relationship::new(parent_a, parent_b, rng);
+        if rel.distance > 0.1 {
+            continue;
+        }
+
+        let fitness_prob = ((parent_a.fitness + parent_b.fitness) / 200.0).tanh().clamp(0.0, 1.0);
+        if rng.gen::<f64>() > fitness_prob {
+            continue;
+        }
+
+        let reproduction_cost_a = 0.5 * (parent_a.genome.metabolic_rate / 100.0);
+        let reproduction_cost_b = 0.5 * (parent_b.genome.metabolic_rate / 100.0);
+        if parent_a.energy <= reproduction_cost_a || parent_b.energy <= reproduction_cost_b {
+            continue;
+        }
+
+        let surplus_a = (parent_a.energy - 1.0).max(0.0);
+        let surplus_b = (parent_b.energy - 1.0).max(0.0);
+        let available_energy = surplus_a + surplus_b;
+        let avg_cost = ((reproduction_cost_a + reproduction_cost_b) / 2.0).max(EPS);
+        if available_energy <= EPS {
+            continue;
+        }
+
+        parent_a.energy -= reproduction_cost_a / 2.0;
+        parent_b.energy -= reproduction_cost_b / 2.0;
+        let child_energy = 0.5 * avg_cost.min(available_energy).max(EPS);
+        let child = spawn_child_continuous(
+            parent_a,
+            parent_b,
+            next_id,
+            current_time,
+            grid_size,
+            child_energy,
+            rng,
+        );
+        next_id += 1;
+        children.push(child);
+    }
+
+    (children, next_id)
 }
 
 pub struct ContinuousWorld {
@@ -1759,11 +2688,15 @@ pub struct ContinuousWorld {
     pub price_history: PriceHistory,
     pub marriages: Vec<Relationship>,
     pub relationships: HashMap<(usize, usize), Relationship>,
+    pub relationships_dirty: bool,
     pub rng: StdRng,
     pub time: f64,
+
+    /// These clocks are now used for sampling/output only. They no longer gate model dynamics.
     pub learning_clock: f64,
     pub market_clock: f64,
     pub reproduction_clock: f64,
+    pub history_clock: f64,
 }
 
 impl ContinuousWorld {
@@ -1784,103 +2717,43 @@ impl ContinuousWorld {
             price_history: PriceHistory::default(),
             marriages: Vec::new(),
             relationships: HashMap::new(),
+            relationships_dirty: false,
             rng,
             time: 0.0,
             learning_clock: 0.0,
             market_clock: 0.0,
             reproduction_clock: 0.0,
+            history_clock: 0.0,
         };
+        world.rebuild_relationships_preserving_memory();
         let food = total_food_inventory(&world.agents);
         record_population_state(&world.agents, &mut world.history, food);
         record_population_snapshot(&world.agents, &mut world.snapshot_history);
+        record_market_state(&world.agents, &mut world.market_history);
         world
     }
 
-    pub fn step(&mut self, dt: f64) -> StepStats {
-        self.time += dt;
+    fn rebuild_relationships_preserving_memory(&mut self) {
+        let previous = std::mem::take(&mut self.relationships);
+        self.relationships = build_relationships_with_memory(&self.agents, &previous, &mut self.rng);
+        self.relationships_dirty = false;
+    }
 
-        for agent in &mut self.agents {
-            produce_dt(agent, &self.resource_grid, dt);
+    fn rebuild_relationships_if_dirty(&mut self) {
+        if self.relationships_dirty {
+            self.rebuild_relationships_preserving_memory();
         }
+    }
 
-        self.learning_clock += dt;
-        while self.learning_clock >= self.config.learning_interval {
-            agent_learning(&mut self.agents, &mut self.rng);
-            self.learning_clock -= self.config.learning_interval;
-        }
-
-        self.relationships = build_relationships_bruteforce(&self.agents, &mut self.rng);
-
-        let mut trades_completed = 0usize;
-        self.market_clock += dt;
-        while self.market_clock >= self.config.market_interval {
-            let market_pairs = select_trade_pairs(&self.relationships, &mut self.rng);
-            record_market_state(&self.agents, &mut self.market_history);
-            let (n, trade_log) = bilateral_market(&market_pairs, &mut self.agents, self.config.trade_delta, &mut self.price_history);
-            trades_completed += n;
-            record_order_flow(&trade_log, &mut self.order_history, self.time.floor() as usize);
-            record_trade_log(&trade_log, &mut self.market_history);
-            self.market_clock -= self.config.market_interval;
-        }
-
-        let mut consumed: HashMap<usize, f64> = HashMap::new();
-        let mut surplus_by_agent: HashMap<usize, f64> = HashMap::new();
-        for agent in &mut self.agents {
-            let (energy_gained, surplus) = consume_from_inventory_dt(agent, dt);
-            consumed.insert(agent.id, energy_gained);
-            surplus_by_agent.insert(agent.id, surplus);
-        }
-        assign_food_to_relationships(&mut self.relationships, &surplus_by_agent);
-
-        let before_survival_count = self.agents.len();
-        let mut survivors = Vec::with_capacity(self.agents.len());
-        for mut agent in self.agents.drain(..) {
-            let ate = *consumed.get(&agent.id).unwrap_or(&0.0);
-            if survives_continuous(&mut agent, self.time, ate, dt) {
-                survivors.push(agent);
-            }
-        }
-        self.agents = survivors;
-        let alive_ids = self.agents.iter().map(|a| a.id).collect::<HashSet<_>>();
-        let after_survival_count = alive_ids.len();
-        self.marriages.retain(|m| alive_ids.contains(&m.a_id) && alive_ids.contains(&m.b_id));
-
-        self.relationships = build_relationships_bruteforce(&self.agents, &mut self.rng);
-        let friendships = build_friendships(&self.relationships);
-        let new_marriages = build_marriages(&mut self.agents, &friendships);
-        self.marriages.extend(new_marriages);
-
-        let mut births = 0usize;
-        self.reproduction_clock += dt;
-        while self.reproduction_clock >= self.config.reproduction_interval {
-            let (children1, next_after_marriage) = reproduce(
-                &self.marriages,
-                &mut self.agents,
-                self.next_id,
-                self.time,
-                self.config.grid_size,
-                &mut self.rng,
-            );
-            let (children2, next_after_random) = random_mating(
-                &mut self.agents,
-                next_after_marriage,
-                self.time,
-                self.config.grid_size,
-                &mut self.rng,
-                self.config.random_mating_rate,
-                self.config.marriage_penalty,
-            );
-            births += children1.len() + children2.len();
-            self.next_id = next_after_random;
-            self.agents.extend(children1);
-            self.agents.extend(children2);
-            self.reproduction_clock -= self.config.reproduction_interval;
-        }
-
-        let total_food_stock = total_food_inventory(&self.agents);
-        record_population_state(&self.agents, &mut self.history, total_food_stock);
-        record_population_snapshot(&self.agents, &mut self.snapshot_history);
-
+    fn summarize(
+        &self,
+        trades_completed: usize,
+        trade_attempts: usize,
+        births: usize,
+        deaths: usize,
+        learning_events: usize,
+        new_marriages: usize,
+    ) -> StepStats {
         let avg_energy = if self.agents.is_empty() {
             0.0
         } else {
@@ -1899,12 +2772,163 @@ impl ContinuousWorld {
 
         StepStats {
             trades_completed,
+            trade_attempts,
             births,
-            deaths: before_survival_count.saturating_sub(after_survival_count),
+            deaths,
+            learning_events,
+            new_marriages,
             avg_energy,
             avg_food,
             avg_age,
             population: self.agents.len(),
+            time: self.time,
         }
+    }
+
+    fn sample_outputs_if_due(&mut self, dt: f64) {
+        self.history_clock += dt;
+        while self.history_clock >= CONTINUOUS_HISTORY_SAMPLE_INTERVAL {
+            let total_food_stock = total_food_inventory(&self.agents);
+            record_population_state(&self.agents, &mut self.history, total_food_stock);
+            record_population_snapshot(&self.agents, &mut self.snapshot_history);
+            self.history_clock -= CONTINUOUS_HISTORY_SAMPLE_INTERVAL;
+        }
+
+        self.market_clock += dt;
+        while self.market_clock >= CONTINUOUS_MARKET_SAMPLE_INTERVAL {
+            record_market_state(&self.agents, &mut self.market_history);
+            self.market_clock -= CONTINUOUS_MARKET_SAMPLE_INTERVAL;
+        }
+    }
+
+    pub fn step(&mut self, dt: f64) -> StepStats {
+        if !dt.is_finite() || dt <= 0.0 {
+            return self.summarize(0, 0, 0, 0, 0, 0);
+        }
+
+        self.time += dt;
+
+        // 1. Movement is continuous: agents climb their perceived location-utility gradient.
+        // Production happens after movement, so agents harvest from the cell they moved into.
+        let moved_agents = move_agents_continuous_dt(
+            &mut self.agents,
+            &self.resource_grid,
+            &self.config,
+            dt,
+        );
+        if moved_agents > 0 {
+            // Positions changed, so local trade/marriage relationships must be refreshed.
+            self.relationships_dirty = true;
+        }
+
+        // 2. Production is continuous: each agent gathers a dt-scaled amount every step.
+        for agent in &mut self.agents {
+            produce_dt(agent, &self.resource_grid, dt);
+        }
+
+        // 3. Learning is a per-agent stochastic process rather than a synchronized sweep.
+        let learning_events = continuous_learning_dt(
+            &mut self.agents,
+            self.config.learning_rate_per_agent(),
+            dt,
+            &mut self.rng,
+        );
+        self.learning_clock += dt;
+
+        // 4. Trade opportunities arrive continuously for eligible local pairs.
+        // Relationships are rebuilt only when births/deaths changed the set of possible pairs.
+        // Rebuilding twice every 0.01s makes the GUI look like it is jumping, because the CPU
+        // spends too long catching up before a new frame can be drawn.
+        self.rebuild_relationships_if_dirty();
+        let (trades_completed, trade_attempts, trade_log) = continuous_bilateral_market_dt(
+            &self.relationships,
+            &mut self.agents,
+            self.config.trade_delta,
+            &mut self.price_history,
+            self.config.trade_rate_per_pair(),
+            dt,
+            &mut self.rng,
+        );
+        if !trade_log.is_empty() {
+            record_order_flow(&trade_log, &mut self.order_history, self.time.floor() as usize);
+            record_trade_log(&trade_log, &mut self.market_history);
+        }
+
+        // 5. Eating, metabolism, aging, and death are continuous. Death is checked every dt.
+        let (deaths, surplus_by_agent) = continuous_consume_and_survive_dt(
+            &mut self.agents,
+            &mut self.marriages,
+            self.time,
+            dt,
+        );
+
+        // 6. Rebuild local relationships after deaths or movement and update surplus memories continuously.
+        // Movement marks relationships_dirty above; deaths do so here after dead agents are removed.
+        if deaths > 0 {
+            self.relationships_dirty = true;
+            self.rebuild_relationships_if_dirty();
+        }
+        update_food_surplus_continuous(
+            &mut self.relationships,
+            &mut self.marriages,
+            &surplus_by_agent,
+            CONTINUOUS_SURPLUS_SMOOTHING_RATE,
+            dt,
+        );
+
+        // 7. Marriage formation is now a hazard process, not a once-per-round batch.
+        let new_marriages = form_marriages_continuous_dt(
+            &mut self.agents,
+            &self.relationships,
+            &mut self.marriages,
+            self.config.marriage_rate_per_friendship(),
+            dt,
+            &mut self.rng,
+        );
+
+        // 8. Births are single-child stochastic events. High surplus/fitness increases the rate,
+        // but children no longer arrive in synchronized integer chunks.
+        let (children_from_marriages, next_after_marriages) = reproduce_marriages_continuous_dt(
+            &mut self.marriages,
+            &mut self.agents,
+            self.next_id,
+            self.time,
+            self.config.grid_size,
+            self.config.birth_rate_per_marriage(),
+            dt,
+            &mut self.rng,
+        );
+        let (children_from_random_mating, next_after_random) = random_mating_continuous_dt(
+            &mut self.agents,
+            next_after_marriages,
+            self.time,
+            self.config.grid_size,
+            &mut self.rng,
+            self.config.random_mating_attempt_rate_per_agent(),
+            self.config.marriage_penalty,
+            dt,
+        );
+        self.next_id = next_after_random;
+
+        let births = children_from_marriages.len() + children_from_random_mating.len();
+        self.agents.extend(children_from_marriages);
+        self.agents.extend(children_from_random_mating);
+        if births > 0 {
+            // New children get inserted into the local relationship graph on the next 0.01s tick.
+            // This keeps births visually immediate without forcing an expensive graph rebuild after
+            // every single stochastic birth event.
+            self.relationships_dirty = true;
+        }
+        self.reproduction_clock += dt;
+
+        self.sample_outputs_if_due(dt);
+        self.summarize(
+            trades_completed,
+            trade_attempts,
+            births,
+            deaths,
+            learning_events,
+            new_marriages,
+        )
     }
 }

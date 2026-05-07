@@ -1,0 +1,10 @@
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\memoffset-3df73ace791d3b59.d: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\raw_field.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\offset_of.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\span_of.rs
+
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\libmemoffset-3df73ace791d3b59.rlib: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\raw_field.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\offset_of.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\span_of.rs
+
+C:\Users\smccune\Desktop\Python\EconSimulator2026\EconSimRust\rust_evo_market\target\release\deps\libmemoffset-3df73ace791d3b59.rmeta: C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\lib.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\raw_field.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\offset_of.rs C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\span_of.rs
+
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\lib.rs:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\raw_field.rs:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\offset_of.rs:
+C:\Users\smccune\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\memoffset-0.5.6\src\span_of.rs:
